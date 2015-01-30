@@ -1,23 +1,28 @@
 package main
 
 import (
-	//"bytes"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
-	//"strings"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform/helper/schema"
 )
 
+// Default timeout for the command is 60s
+const defaultTimeout = 60
+
+// ExecCmd holds data necessary for a command to run
 type ExecCmd struct {
 	Cmd     string
 	Timeout int
 }
 
+// Terraform schema for the 'exec' resource that is
+// used in the provider configuration
 func resourceExec() *schema.Resource {
 	return &schema.Resource{
 		Create: resourceExecCreate,
@@ -33,6 +38,12 @@ func resourceExec() *schema.Resource {
 			"only_if": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
+				//ForceNew: true,
+			},
+			"timeout": &schema.Schema{
+				Type:     schema.TypeInt,
+				Optional: true,
+				//ForceNew: true,
 			},
 			"output": &schema.Schema{
 				Type:     schema.TypeString,
@@ -43,52 +54,78 @@ func resourceExec() *schema.Resource {
 }
 
 func resourceExecCreate(d *schema.ResourceData, m interface{}) error {
-	command := d.Get("command").(string)
-	onlyIfCmd := d.Get("only_if").(string)
+	timeout := d.Get("timeout").(int)
 
-	id := fmt.Sprintf("%s: %s", time.Now().Format("20060102150405"), command)
+	cmd := &ExecCmd{
+		Cmd:     d.Get("command").(string),
+		Timeout: timeout,
+	}
+
+	onlyIf := &ExecCmd{
+		Cmd:     d.Get("only_if").(string),
+		Timeout: timeout,
+	}
+
+	// Set the id of the resource
+	id := strings.Join(strings.Split(cmd.Cmd, " "), "-")
 	d.SetId(id)
 
 	// run the only_if command and continue only on success
-	if onlyIfCmd != "" {
-		_, err := ExecuteCmd(&ExecCmd{Cmd: onlyIfCmd})
+	if onlyIf.Cmd != "" {
+		_, err := ExecuteCmd(onlyIf)
 		if err != nil {
+			log.Printf("[DEBUG] Skipped execution (%s): `%s` exited with a failed state", cmd.Cmd, onlyIf.Cmd)
 			// stop executing the command by returning nil
 			return nil
 		}
 	}
 
-	// Run the actual command
-	cmd := &ExecCmd{Cmd: command}
+	// run the actual command
 	out, err := ExecuteCmd(cmd)
 	if err != nil {
-		d.Set("output", out)
-		return err
+		d.Set("output", "")
 	}
-	log.Printf("[DEBUG] Exec output: %s", out)
+	log.Printf("[DEBUG] Command Output (%s): %s", cmd.Cmd, out)
+	d.Set("output", out)
+	return nil
+}
+
+func resourceExecUpdate(d *schema.ResourceData, m interface{}) error {
+	timeout := d.Get("timeout").(int)
+
+	cmd := &ExecCmd{
+		Cmd:     d.Get("command").(string),
+		Timeout: timeout,
+	}
+
+	onlyIf := &ExecCmd{
+		Cmd:     d.Get("only_if").(string),
+		Timeout: timeout,
+	}
+
+	// run the only_if command and continue only on success
+	if onlyIf.Cmd != "" {
+		_, err := ExecuteCmd(onlyIf)
+		if err != nil {
+			log.Printf("[DEBUG] Skipped execution (%s): `%s` exited with a failed state", cmd.Cmd, onlyIf.Cmd)
+			// stop executing the command by returning nil
+			return nil
+		}
+	}
+
+	// run the acctual command
+	out, err := ExecuteCmd(cmd)
+	if err != nil {
+		d.Set("output", "")
+		return nil
+	}
+
+	log.Printf("[DEBUG] Command Output (%s): %s", cmd.Cmd, out)
 	d.Set("output", out)
 	return nil
 }
 
 func resourceExecRead(d *schema.ResourceData, m interface{}) error {
-	// onlyIfCmd := d.Get("only_if").(string)
-	// command := d.Get("command").(string)
-	// id := fmt.Sprintf("%s: %s", time.Now().Format("20060102150405"), command)
-	// d.SetId(id)
-	// // run the only_if command
-	// if onlyIfCmd != "" {
-	// 	_, err := exec.Command(onlyIfCmd).Output()
-	// 	if err != nil {
-	// 		// stop executing the command by returning nil
-	// 		return err
-	// 		//return nil
-	// 	}
-	// }
-	// d.SetId("")
-	return nil
-}
-
-func resourceExecUpdate(d *schema.ResourceData, m interface{}) error {
 	return nil
 }
 
@@ -126,12 +163,28 @@ func ExecuteCmd(command *ExecCmd) (output string, err error) {
 		return "", err
 	}
 
-	var out []byte
-	log.Printf("[DEBUG] executing: %s", cmdWrapper.Name())
-	out, err = exec.Command(cmdWrapper.Name()).Output()
-	if err != nil {
-		return output, err
+	if command.Timeout == 0 {
+		command.Timeout = defaultTimeout
 	}
-	output = string(out[:])
-	return output, nil
+
+	// Run the command in a channel using select statement
+	// with time.After for timingout calls that run too long
+	var out []byte
+	timeout := make(chan error)
+	go func() {
+		out, err = exec.Command(cmdWrapper.Name()).Output()
+		timeout <- err
+	}()
+
+	select {
+	case err := <-timeout:
+		if err != nil {
+			return "", err
+		}
+	case <-time.After(time.Duration(command.Timeout) * time.Second):
+		log.Printf("[DEBUG] Execution (%s) timedout in %ds", command.Cmd, command.Timeout)
+		return "", nil
+	}
+
+	return string(out[:]), nil
 }
