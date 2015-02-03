@@ -6,7 +6,9 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"strings"
+	//"strings"
+	"crypto/sha1"
+	"encoding/hex"
 	"time"
 
 	"github.com/hashicorp/terraform/helper/schema"
@@ -38,12 +40,10 @@ func resourceExec() *schema.Resource {
 			"only_if": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
-				//ForceNew: true,
 			},
 			"timeout": &schema.Schema{
 				Type:     schema.TypeInt,
 				Optional: true,
-				//ForceNew: true,
 			},
 			"output": &schema.Schema{
 				Type:     schema.TypeString,
@@ -54,6 +54,26 @@ func resourceExec() *schema.Resource {
 }
 
 func resourceExecCreate(d *schema.ResourceData, m interface{}) error {
+	return ExecResourceCmd(d, m)
+}
+
+func resourceExecUpdate(d *schema.ResourceData, m interface{}) error {
+	if d.HasChange("command") {
+		// Set the id of the resource to destroy the resource
+		d.SetId("")
+	}
+	return ExecResourceCmd(d, m)
+}
+
+func resourceExecRead(d *schema.ResourceData, m interface{}) error {
+	return nil
+}
+
+func resourceExecDelete(d *schema.ResourceData, m interface{}) error {
+	return nil
+}
+
+func ExecResourceCmd(d *schema.ResourceData, m interface{}) error {
 	timeout := d.Get("timeout").(int)
 
 	cmd := &ExecCmd{
@@ -65,10 +85,6 @@ func resourceExecCreate(d *schema.ResourceData, m interface{}) error {
 		Cmd:     d.Get("only_if").(string),
 		Timeout: timeout,
 	}
-
-	// Set the id of the resource
-	id := strings.Join(strings.Split(cmd.Cmd, " "), "-")
-	d.SetId(id)
 
 	// run the only_if command and continue only on success
 	if onlyIf.Cmd != "" {
@@ -84,52 +100,13 @@ func resourceExecCreate(d *schema.ResourceData, m interface{}) error {
 	out, err := ExecuteCmd(cmd)
 	if err != nil {
 		d.Set("output", "")
-	}
-	log.Printf("[DEBUG] Command Output (%s): %s", cmd.Cmd, out)
-	d.Set("output", out)
-	return nil
-}
-
-func resourceExecUpdate(d *schema.ResourceData, m interface{}) error {
-	timeout := d.Get("timeout").(int)
-
-	cmd := &ExecCmd{
-		Cmd:     d.Get("command").(string),
-		Timeout: timeout,
-	}
-
-	onlyIf := &ExecCmd{
-		Cmd:     d.Get("only_if").(string),
-		Timeout: timeout,
-	}
-
-	// run the only_if command and continue only on success
-	if onlyIf.Cmd != "" {
-		_, err := ExecuteCmd(onlyIf)
-		if err != nil {
-			log.Printf("[DEBUG] Skipped execution (%s): `%s` exited with a failed state", cmd.Cmd, onlyIf.Cmd)
-			// stop executing the command by returning nil
-			return nil
-		}
-	}
-
-	// run the acctual command
-	out, err := ExecuteCmd(cmd)
-	if err != nil {
-		d.Set("output", "")
 		return nil
 	}
-
 	log.Printf("[DEBUG] Command Output (%s): %s", cmd.Cmd, out)
+
 	d.Set("output", out)
-	return nil
-}
-
-func resourceExecRead(d *schema.ResourceData, m interface{}) error {
-	return nil
-}
-
-func resourceExecDelete(d *schema.ResourceData, m interface{}) error {
+	// Set the id of the resource
+	d.SetId(GenerateSHA1(cmd.Cmd))
 	return nil
 }
 
@@ -187,4 +164,11 @@ func ExecuteCmd(command *ExecCmd) (output string, err error) {
 	}
 
 	return string(out[:]), nil
+}
+
+// GenerateSHA1 generates a SHA1 hex digest for the given string
+func GenerateSHA1(str string) string {
+	h := sha1.New()
+	h.Write([]byte(str))
+	return hex.EncodeToString(h.Sum(nil))
 }
