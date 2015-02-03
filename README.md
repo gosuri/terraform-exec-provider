@@ -17,7 +17,7 @@ Provides an ability to execute arbitrary commands
 
 ### Examples
 
-The below example will run the command after creating VPCs, where `commands/peer-vpc` is shell scripts to add peering connection between VPCs.
+The below example will run the command after creating VPCs, where `commands/peer-vpc` is shell script to add peering connection between VPCs and will be executed after the VPCs are created when `depends_on` attribute is specified.
 
     resource "aws_vpc" "primary" {
       cidr_block = "10.0.0.0/16"
@@ -29,6 +29,7 @@ The below example will run the command after creating VPCs, where `commands/peer
 
     resource "exec", "peer_vpcs" {
       command = "commands/peer-vpc ${aws_vpc.primary.id} ${aws_vpc.app.id}"
+      depends_on = ["aws_vpc.primary.id","aws_vpc.app"]
     }
 
 ## Installation
